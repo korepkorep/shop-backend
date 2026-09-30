@@ -11,7 +11,8 @@ class Category(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
-    parent_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
+    # Индекс на внешний ключ: быстрый поиск подкатегорий и проверка при удалении родителя
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"), index=True)
 
 
 class Product(TimestampMixin, Base):
