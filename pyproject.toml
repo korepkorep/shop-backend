@@ -1,0 +1,19 @@
+[project]
+name = "shopcore"
+version = "1.0.0"
+description = "Бэкенд интернет-магазина: пет-проект системного аналитика"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["B008"]  # Depends(...) в аргументах — стандартный приём FastAPI
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"psp_mock/main.py" = ["E501"]  # HTML-страница оплаты

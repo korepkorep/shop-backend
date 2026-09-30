@@ -1,0 +1,18 @@
+fastapi==0.142.0
+uvicorn[standard]==0.46.0
+SQLAlchemy==2.1.1
+psycopg[binary]==3.3.6
+alembic==1.20.0
+pydantic==2.13.3
+pydantic-settings==2.14.0
+email-validator==2.3.0
+PyJWT==2.12.1
+bcrypt==5.0.0
+httpx==0.28.1
+python-multipart==0.0.26  # формы на странице оплаты в моке PSP
+pika==1.4.4
+confluent-kafka==2.15.1
+
+# тесты и линтер
+pytest==9.1.1
+ruff==0.16.9

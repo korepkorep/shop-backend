@@ -1,0 +1,182 @@
+# ShopCore: вся система одной командой — docker compose up --build
+#
+# Можно поднимать по частям (API работает и без брокеров — сообщения копятся в outbox):
+#   docker compose up --build api psp-mock          # БД + API + платёжка
+#   docker compose up rabbitmq outbox-relay notifications reservations sweeper
+#   docker compose up kafka kafka-ui analytics audit
+#   docker compose --profile dashboard up dashboard  # дашборд на Streamlit
+#   docker compose --profile test run --rm tests     # автотесты
+#
+# Адреса:
+#   API и Swagger       http://localhost:8000/docs
+#   Мок PSP             http://localhost:8001/docs
+#   RabbitMQ Management http://localhost:15672  (guest / guest)
+#   Kafka UI            http://localhost:8080
+#   Дашборд             http://localhost:8501
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+psycopg://shop:shop@postgres:5432/shop
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  PSP_BASE_URL: http://psp-mock:8001
+  JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-in-env-0123456789}
+  PSP_WEBHOOK_SECRET: ${PSP_WEBHOOK_SECRET:-psp-secret-change-me}
+  RESERVATION_TTL_SECONDS: ${RESERVATION_TTL_SECONDS:-900}
+  NOTIFY_RETRY_DELAYS_SECONDS: ${NOTIFY_RETRY_DELAYS_SECONDS:-60,300,900}
+
+x-worker: &worker
+  build: .
+  environment: *app-env
+  restart: unless-stopped
+  depends_on:
+    api:
+      condition: service_healthy  # API применяет миграции — воркеры стартуют после
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+    ports:
+      - "5433:5432"  # 5433 снаружи, чтобы не конфликтовать с локальным Postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    environment: *app-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  psp-mock:
+    build: .
+    command: uvicorn psp_mock.main:app --host 0.0.0.0 --port 8001
+    environment:
+      PSP_WEBHOOK_URL: http://api:8000/api/v1/webhooks/psp
+      PSP_WEBHOOK_SECRET: ${PSP_WEBHOOK_SECRET:-psp-secret-change-me}
+      PSP_PUBLIC_URL: http://localhost:8001
+      PSP_DUPLICATE_WEBHOOK_PROBABILITY: ${PSP_DUPLICATE_WEBHOOK_PROBABILITY:-0.3}
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:3.9.1
+    ports:
+      - "9094:9094"  # для подключения с хоста (например, из IDE)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller  # режим KRaft: без ZooKeeper
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_RETENTION_HOURS: 168  # 7 дней (решение из vision, C3)
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw  # любой base64-UUID, один раз на кластер
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:latest
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: shopcore
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  outbox-relay:
+    <<: *worker
+    command: python -m workers.outbox_relay
+
+  notifications:
+    <<: *worker
+    command: python -m workers.notifications
+
+  reservations:
+    <<: *worker
+    command: python -m workers.reservations
+
+  sweeper:
+    <<: *worker
+    command: python -m workers.sweeper
+
+  analytics:
+    <<: *worker
+    command: python -m workers.analytics
+
+  audit:
+    <<: *worker
+    command: python -m workers.audit
+
+  dashboard:
+    profiles: ["dashboard"]
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://shop:shop@postgres:5432/shop
+    ports:
+      - "8501:8501"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  tests:
+    profiles: ["test"]
+    build: .
+    command: pytest -q
+    environment:
+      DATABASE_URL: postgresql+psycopg://shop:shop@postgres:5432/shop_test
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  rabbitdata:
+  kafkadata:
