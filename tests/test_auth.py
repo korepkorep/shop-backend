@@ -71,3 +71,17 @@ def test_customer_cannot_use_admin_api(client, buyer):
     r = client.get(f"{API}/admin/orders", headers=headers)
     assert r.status_code == 403
     assert r.json()["error"]["code"] == "FORBIDDEN"
+
+
+def test_openapi_documents_real_error_format(client):
+    """Swagger описывает ошибки в том же формате, в каком их отдаёт API: {"error": {...}}."""
+    schema = client.get("/openapi.json").json()
+    assert "HTTPValidationError" not in schema["components"]["schemas"]
+    assert "error" in schema["components"]["schemas"]["ErrorResponse"]["properties"]
+    for operations in schema["paths"].values():
+        for operation in operations.values():
+            for status, response in operation["responses"].items():
+                if status.startswith("4"):
+                    assert response["content"]["application/json"]["schema"]["$ref"].endswith("/ErrorResponse")
+    cart_add = schema["paths"]["/api/v1/cart/items"]["post"]["responses"]
+    assert {"401", "404", "409", "422"} <= set(cart_add)

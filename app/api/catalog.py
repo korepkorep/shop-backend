@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.schemas.catalog import CategoryOut, ProductOut, ProductPage, ProductSort
+from app.schemas.errors import error_responses
 from app.services import catalog as service
 
 router = APIRouter(tags=["Каталог"])
@@ -13,7 +14,12 @@ def categories(db: Session = Depends(get_db)):
     return service.category_tree(db)
 
 
-@router.get("/products", response_model=ProductPage, summary="Список товаров с фильтрами (US-03)")
+@router.get(
+    "/products",
+    response_model=ProductPage,
+    summary="Список товаров с фильтрами (US-03)",
+    responses=error_responses(422),
+)
 def products(
     category_id: int | None = Query(None, description="Категория вместе со всеми подкатегориями"),
     price_min: int | None = Query(None, ge=0, description="Цена от, в копейках"),
@@ -36,6 +42,11 @@ def products(
     )
 
 
-@router.get("/products/{product_id}", response_model=ProductOut, summary="Карточка товара (US-04)")
+@router.get(
+    "/products/{product_id}",
+    response_model=ProductOut,
+    summary="Карточка товара (US-04)",
+    responses=error_responses(404, 422, s404="NOT_FOUND — товара нет или он снят с продажи"),
+)
 def product(product_id: int, db: Session = Depends(get_db)):
     return service.get_product(db, product_id)
