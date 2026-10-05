@@ -93,6 +93,16 @@ def update_item(db: Session, user_id: int, product_id: int, quantity: int) -> di
     item = db.get(CartItem, (cart.id, product_id)) if cart else None
     if item is None:
         raise not_found("Товар в корзине")
+    # US-06 AC 1 (v0.2): то же правило остатка, что при добавлении (US-05 AC 4)
+    stock = db.get(Stock, product_id)
+    available = stock.available if stock else 0
+    if quantity > available:
+        raise AppError(
+            409,
+            "OUT_OF_STOCK",
+            "Недостаточно товара на складе",
+            [{"product_id": product_id, "requested": quantity, "available": available}],
+        )
     item.quantity = quantity
     db.commit()
     db.expire_all()

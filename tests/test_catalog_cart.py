@@ -90,3 +90,22 @@ def test_cart_delete_is_idempotent(client, buyer, make_product):
     assert client.delete(f"{API}/cart/items/{product.id}", headers=headers).status_code == 204
     assert client.delete(f"{API}/cart/items/{product.id}", headers=headers).status_code == 204
     assert client.get(f"{API}/cart", headers=headers).json()["items"] == []
+
+
+def test_cart_update_respects_stock(client, buyer, make_product):
+    """US-06 AC 1 (v0.2): через PATCH нельзя поставить больше доступного остатка."""
+    _, headers = buyer
+    product = make_product(quantity=3)
+    add_to_cart(client, headers, product.id, 1)
+
+    r = client.patch(f"{API}/cart/items/{product.id}", json={"quantity": 10}, headers=headers)
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "OUT_OF_STOCK"
+
+    r = client.patch(f"{API}/cart/items/{product.id}", json={"quantity": 3}, headers=headers)
+    assert r.status_code == 200
+    assert r.json()["items"][0]["quantity"] == 3
+
+    # Лимит 10 проверяет схема запроса ещё до сервиса
+    r = client.patch(f"{API}/cart/items/{product.id}", json={"quantity": 11}, headers=headers)
+    assert r.status_code == 422
